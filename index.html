@@ -810,6 +810,7 @@ input,textarea{-webkit-user-select:text;user-select:text}
     <div class="dock-inner" id="dock-inner">
       <input type="text" id="magic-input" placeholder="e.g. 200g grilled potato" autocomplete="off" autocapitalize="none" spellcheck="false">
       <button class="dock-btn" id="btn-barcode" aria-label="Scan barcode">|||</button>
+      <button class="dock-btn" id="btn-quick-add" aria-label="Quick add food">+</button>
       <button class="dock-btn send" id="btn-send" aria-label="Add">↑</button>
     </div>
   </div>
@@ -856,11 +857,11 @@ input,textarea{-webkit-user-select:text;user-select:text}
   </div>
 </div>
 
-<!-- Manual add sheet (when food DB has nothing) -->
+<!-- Manual add sheet -->
 <div class="sheet" id="sheet-manual">
   <div class="sheet-handle"></div>
-  <div class="sheet-title">Add a food</div>
-  <div class="sheet-sub">No match in the database — fill it in once and it's saved forever.</div>
+  <div class="sheet-title" id="man-title">Quick add</div>
+  <div class="sheet-sub" id="man-sub">Type name, quantity, and macros. Goes straight to today's log.</div>
   <div class="field">
     <div class="field-label">Name</div>
     <input type="text" class="field-input" id="man-name" placeholder="e.g. Mom's lentil soup">
@@ -900,7 +901,26 @@ input,textarea{-webkit-user-select:text;user-select:text}
       <input type="number" inputmode="decimal" class="field-input" id="man-f" placeholder="0">
     </div>
   </div>
-  <div class="sheet-actions">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+    <div class="field">
+      <div class="field-label">Fiber (g)</div>
+      <input type="number" inputmode="decimal" class="field-input" id="man-fiber" placeholder="0">
+    </div>
+    <div class="field">
+      <div class="field-label">Sugar (g)</div>
+      <input type="number" inputmode="decimal" class="field-input" id="man-sugar" placeholder="0">
+    </div>
+    <div class="field">
+      <div class="field-label">Sodium (mg)</div>
+      <input type="number" inputmode="decimal" class="field-input" id="man-sodium" placeholder="0">
+    </div>
+  </div>
+  <label class="cf-toggle" id="man-save-row">
+    <span>Save to My Foods</span>
+    <input type="checkbox" id="man-save" checked>
+    <span class="toggle-track"></span>
+  </label>
+  <div class="sheet-actions" style="margin-top:14px">
     <button class="btn ghost" id="man-cancel">Cancel</button>
     <button class="btn primary" id="man-add">Add</button>
   </div>
@@ -1578,7 +1598,7 @@ async function doSend(){
     const matches = searchFoodDB(name, unit, 5);
     if(matches.length === 0){
       magic.value = "";
-      openManualAdd({ rawText: text, name, qty: qty || 100, unit: unit || "g" });
+      openManualAdd({ name, qty: qty || 100, unit: unit || "g", fromFallback: true });
       return;
     }
     const useQty = (qty != null) ? qty : matches[0].per;
@@ -1720,31 +1740,58 @@ function openPicker(matches, qty, query){
 $("#picker-cancel").addEventListener("click", closeSheets);
 $("#picker-manual").addEventListener("click", () => {
   closeSheets();
-  openManualAdd({ name: pickerState.query, qty: pickerState.qty, unit: "g" });
+  openManualAdd({ name: pickerState.query, qty: pickerState.qty, unit: "g", fromFallback: true });
 });
 
-let manualState = {};
 function openManualAdd(seed){
-  manualState = { ...seed };
+  seed = seed || {};
+  $("#man-title").textContent = seed.fromFallback ? "No match — add manually" : "Quick add";
+  $("#man-sub").textContent = seed.fromFallback
+    ? "Nothing in the database matched — fill it in once and it's saved."
+    : "Type name, quantity, and macros. Goes straight to today's log.";
   $("#man-name").value = seed.name || "";
-  $("#man-qty").value = seed.qty || 100;
+  $("#man-qty").value  = seed.qty != null ? seed.qty : "";
   $("#man-unit").value = seed.unit || "g";
   $("#man-kcal").value = ""; $("#man-p").value = ""; $("#man-c").value = ""; $("#man-f").value = "";
+  $("#man-fiber").value = ""; $("#man-sugar").value = ""; $("#man-sodium").value = "";
+  $("#man-save").checked = true;
   openSheet("#sheet-manual");
 }
 $("#man-cancel").addEventListener("click", closeSheets);
 $("#man-add").addEventListener("click", () => {
-  const name = $("#man-name").value.trim() || "Food";
+  const name = $("#man-name").value.trim();
   const qty = parseFloat($("#man-qty").value) || 0;
   const unit = $("#man-unit").value;
   const kcal = parseFloat($("#man-kcal").value) || 0;
   const p = parseFloat($("#man-p").value) || 0;
   const c = parseFloat($("#man-c").value) || 0;
   const f = parseFloat($("#man-f").value) || 0;
+  const fiber  = parseFloat($("#man-fiber").value)  || 0;
+  const sugar  = parseFloat($("#man-sugar").value)  || 0;
+  const sodium = parseFloat($("#man-sodium").value) || 0;
+  if(!name){ toast("Name required", "error"); return; }
   if(qty <= 0){ toast("Quantity required", "error"); return; }
-  closeSheets();
-  openConfirm([{ name, qty, unit, kcal, p, c, f, fiber:0, sugar:0, sodium:0, source:"manual", note:"manual entry" }], "Confirm");
+
+  // Add directly to today's log — user already filled in the macros, no confirm step needed.
+  const date = state.current.date;
+  if(!state.log[date]) state.log[date] = [];
+  state.log[date].push({
+    id: uid(),
+    name, qty, unit, qtyLabel: `${qty}${unit}`,
+    kcal, p, c, f, fiber, sugar, sodium,
+    source: "manual", addedAt: Date.now()
+  });
+
+  // Save to library if the toggle is on.
+  if($("#man-save").checked){
+    saveFoodToLibrary({ name, unit, per:qty, kcal, p, c, f, fiber, sugar, sodium, source:"manual" });
+  }
+
+  save(); render(); closeSheets();
+  toast($("#man-save").checked ? "Added & saved" : "Added", "success");
 });
+
+$("#btn-quick-add").addEventListener("click", () => openManualAdd({}));
 
 $("#row-export").addEventListener("click", ()=>{
   const data = JSON.stringify(state, null, 2);
