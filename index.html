@@ -1879,13 +1879,14 @@ async function startBarcodeZXing(){
   ]);
   zxingReader = new ZXing.BrowserMultiFormatReader(hints, 250);
   const v = $("#cam-video");
+  let firedOnce = false;
   try{
-    zxingReader.decodeFromVideoElementContinuously(v, (result, err) => {
-      if(result){
-        const code = result.getText();
-        closeCamera();
-        handleBarcode(code);
-      }
+    zxingReader.decodeFromVideoElement(v, (result) => {
+      if(!result || firedOnce) return;
+      firedOnce = true;
+      const code = result.getText();
+      closeCamera();
+      handleBarcode(code);
     });
   }catch(e){
     toast("Scanner error: "+e.message, "error");
@@ -1893,35 +1894,58 @@ async function startBarcodeZXing(){
   }
 }
 
-async function handleBarcode(code){
+let handlingBarcode = false;
+async function handleBarcode(rawCode){
+  if(handlingBarcode) return;
+  handlingBarcode = true;
+  // Sanitize: ZXing can return surrounding whitespace or odd chars; barcodes are digits only.
+  const code = String(rawCode || "").replace(/\D/g, "");
+  if(code.length < 6 || code.length > 14){
+    toast(`Invalid barcode (${rawCode})`, "error");
+    handlingBarcode = false;
+    return;
+  }
   toast("Looking up "+code+"…");
+  // Cache-bust query param so iOS Safari never serves an empty cached response.
+  const url = `https://world.openfoodfacts.org/api/v2/product/${code}.json?fields=product_name,nutriments,brands&_=${Date.now()}`;
   try{
-    // Open Food Facts has open CORS — works straight from browser.
-    const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json?fields=product_name,nutriments,serving_size,quantity,brands`);
+    const res = await fetchWithTimeout(url, 8000);
+    if(!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     if(j.status !== 1 || !j.product){
-      toast("Product not found in Open Food Facts", "error");
+      toast(`Product ${code} not in Open Food Facts`, "error");
       return;
     }
     const p = j.product;
     const n = p.nutriments || {};
-    // values are per 100g unless serving_quantity is given
-    const name = [p.brands, p.product_name].filter(Boolean).join(" — ") || "Scanned product";
+    const name = [p.brands, p.product_name].filter(Boolean).join(" — ") || `Product ${code}`;
     const item = {
       name,
       qty: 100, unit:"g",
       kcal: +n["energy-kcal_100g"] || +n["energy-kcal"] || 0,
-      p: +n.proteins_100g || +n.proteins || 0,
-      c: +n.carbohydrates_100g || +n.carbohydrates || 0,
-      f: +n.fat_100g || +n.fat || 0,
+      p:    +n.proteins_100g    || +n.proteins    || 0,
+      c:    +n.carbohydrates_100g || +n.carbohydrates || 0,
+      f:    +n.fat_100g         || +n.fat         || 0,
+      fiber:  +n.fiber_100g     || +n.fiber       || 0,
+      sugar:  +n.sugars_100g    || +n.sugars      || 0,
+      sodium: ((+n.sodium_100g || +n.sodium || 0) * 1000) || ((+n.salt_100g || 0) * 400),
       source: "barcode",
       note: "per 100g — adjust to your serving"
     };
-    if(item.kcal <= 0){ toast("This product has no nutrition data", "error"); return; }
+    if(item.kcal <= 0){ toast(`No nutrition data for ${code}`, "error"); return; }
     openConfirm([item], "Scanned product");
   }catch(e){
-    toast("Lookup failed", "error");
+    console.error("OFF lookup error:", e);
+    toast(`Lookup failed: ${e.message || e.name || "network"}`, "error");
+  }finally{
+    handlingBarcode = false;
   }
+}
+
+function fetchWithTimeout(url, ms){
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
 
 
