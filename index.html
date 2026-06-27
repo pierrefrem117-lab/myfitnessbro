@@ -90,9 +90,10 @@ input,textarea{-webkit-user-select:text;user-select:text}
 }
 .date-nav{display:flex;align-items:center;gap:10px}
 .date-arrow{
-  width:30px;height:30px;border-radius:50%;
+  width:36px;height:36px;border-radius:50%;
   background:var(--bg-card);color:var(--text-dim);
   display:flex;align-items:center;justify-content:center;font-size:14px;
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;user-select:none;
 }
 .date-arrow:active{background:var(--bg-raised)}
 .date-arrow.dim{opacity:.3;pointer-events:none}
@@ -939,7 +940,9 @@ input,textarea{-webkit-user-select:text;user-select:text}
    STATE & STORAGE
    ============================================================ */
 const STORAGE_KEY = "myfitnessbro/v1";
-const todayISO = () => new Date().toISOString().slice(0,10);
+const pad2 = n => String(n).padStart(2, "0");
+const toLocalISO = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+const todayISO = () => toLocalISO(new Date());
 
 const DEFAULT_STATE = {
   v: 1,
@@ -1013,9 +1016,11 @@ function dayRelative(iso){
   return a.toLocaleDateString(undefined, { weekday:"long" });
 }
 function shiftDate(iso, days){
-  const d = new Date(iso+"T00:00:00");
-  d.setDate(d.getDate()+days);
-  return d.toISOString().slice(0,10);
+  // Work entirely in local time — no UTC round-tripping (which off-by-ones in non-UTC zones).
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate()+days);
+  return toLocalISO(dt);
 }
 
 /* ============================================================
@@ -1254,15 +1259,18 @@ $("#goto-goals").addEventListener("click", ()=> switchTab("goals"));
 /* ============================================================
    DATE NAV
    ============================================================ */
-$("#date-prev").addEventListener("click", ()=>{
-  state.current.date = shiftDate(state.current.date, -1);
-  render(); save();
-});
-$("#date-next").addEventListener("click", ()=>{
-  if(state.current.date >= todayISO()) return;
-  state.current.date = shiftDate(state.current.date, +1);
-  render(); save();
-});
+// Date nav: single click only (no 2x fire on mobile), no SAVED pill on every tap.
+let lastDateNavAt = 0;
+function navDate(delta){
+  const now = Date.now();
+  if(now - lastDateNavAt < 250) return;  // debounce ghost clicks
+  lastDateNavAt = now;
+  if(delta > 0 && state.current.date >= todayISO()) return;
+  state.current.date = shiftDate(state.current.date, delta);
+  render();   // no save() — current date is ephemeral UI state
+}
+$("#date-prev").addEventListener("click", () => navDate(-1));
+$("#date-next").addEventListener("click", () => navDate(+1));
 
 /* ============================================================
    SHEETS
