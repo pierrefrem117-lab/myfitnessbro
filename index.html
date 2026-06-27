@@ -1834,11 +1834,20 @@ let cameraStream = null, scanRAF = null;
 $("#btn-barcode").addEventListener("click", openCamera);
 $("#cam-close").addEventListener("click", closeCamera);
 
+let zxingReader = null;
+
 async function openCamera(){
   $("#cam-overlay").classList.add("show");
   $("#cam-title").textContent = "Scan barcode";
   $("#cam-hint").textContent = "Point at the barcode";
   $("#cam-frame").style.aspectRatio = "1.8";
+  if("BarcodeDetector" in window){
+    return openCameraNative();
+  }
+  return openCameraZXing();
+}
+
+async function openCameraNative(){
   try{
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" }, width:{ideal:1280}, height:{ideal:720} },
@@ -1847,29 +1856,66 @@ async function openCamera(){
     const v = $("#cam-video");
     v.srcObject = cameraStream;
     await v.play();
-    startBarcodeLoop();
+    startBarcodeNative();
   }catch(e){
     toast("Camera unavailable: "+e.message, "error");
     closeCamera();
   }
 }
+
+async function openCameraZXing(){
+  try{
+    await loadZXing();
+  }catch(e){
+    toast(e.message, "error");
+    closeCamera();
+    return;
+  }
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.CODE_128
+  ]);
+  zxingReader = new ZXing.BrowserMultiFormatReader(hints, 250);
+  const v = $("#cam-video");
+  let firedOnce = false;
+  try{
+    // Let ZXing manage the stream — it sets srcObject + plays the video itself.
+    // The undefined deviceId tells it to pick the default; the constraints below force the back camera.
+    await zxingReader.decodeFromConstraints(
+      { video: { facingMode: { ideal: "environment" } }, audio: false },
+      v,
+      (result, err) => {
+        if(!result || firedOnce) return;
+        firedOnce = true;
+        const code = result.getText();
+        closeCamera();
+        handleBarcode(code);
+      }
+    );
+  }catch(e){
+    toast("Scanner error: " + (e?.message || e?.name || e || "unknown"), "error");
+    closeCamera();
+  }
+}
+
 function closeCamera(){
   if(scanRAF) cancelAnimationFrame(scanRAF), scanRAF=null;
   if(zxingReader){ try{ zxingReader.reset(); }catch(e){} zxingReader = null; }
+  // ZXing may have left a stream attached directly to the video element.
+  const v = $("#cam-video");
+  if(v.srcObject){
+    try{ v.srcObject.getTracks().forEach(t => t.stop()); }catch(e){}
+    v.srcObject = null;
+  }
   if(cameraStream){
     cameraStream.getTracks().forEach(t => t.stop());
     cameraStream = null;
   }
   $("#cam-overlay").classList.remove("show");
-}
-
-let zxingReader = null;
-
-async function startBarcodeLoop(){
-  if("BarcodeDetector" in window){
-    return startBarcodeNative();
-  }
-  return startBarcodeZXing();
 }
 
 async function startBarcodeNative(){
@@ -1906,39 +1952,6 @@ function loadZXing(){
     s.onerror = () => rej(new Error("Couldn't load barcode library — check connection"));
     document.head.appendChild(s);
   });
-}
-
-async function startBarcodeZXing(){
-  try{
-    await loadZXing();
-  }catch(e){
-    toast(e.message, "error");
-    closeCamera();
-    return;
-  }
-  const hints = new Map();
-  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-    ZXing.BarcodeFormat.EAN_13,
-    ZXing.BarcodeFormat.EAN_8,
-    ZXing.BarcodeFormat.UPC_A,
-    ZXing.BarcodeFormat.UPC_E,
-    ZXing.BarcodeFormat.CODE_128
-  ]);
-  zxingReader = new ZXing.BrowserMultiFormatReader(hints, 250);
-  const v = $("#cam-video");
-  let firedOnce = false;
-  try{
-    zxingReader.decodeFromVideoElement(v, (result) => {
-      if(!result || firedOnce) return;
-      firedOnce = true;
-      const code = result.getText();
-      closeCamera();
-      handleBarcode(code);
-    });
-  }catch(e){
-    toast("Scanner error: "+e.message, "error");
-    closeCamera();
-  }
 }
 
 let handlingBarcode = false;
