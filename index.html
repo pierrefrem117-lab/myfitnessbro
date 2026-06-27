@@ -1800,6 +1800,7 @@ async function openCamera(){
 }
 function closeCamera(){
   if(scanRAF) cancelAnimationFrame(scanRAF), scanRAF=null;
+  if(zxingReader){ try{ zxingReader.reset(); }catch(e){} zxingReader = null; }
   if(cameraStream){
     cameraStream.getTracks().forEach(t => t.stop());
     cameraStream = null;
@@ -1807,12 +1808,16 @@ function closeCamera(){
   $("#cam-overlay").classList.remove("show");
 }
 
+let zxingReader = null;
+
 async function startBarcodeLoop(){
-  if(!("BarcodeDetector" in window)){
-    toast("Barcode API not available in this browser", "error");
-    closeCamera();
-    return;
+  if("BarcodeDetector" in window){
+    return startBarcodeNative();
   }
+  return startBarcodeZXing();
+}
+
+async function startBarcodeNative(){
   const detector = new BarcodeDetector({ formats: ["ean_13","ean_8","upc_a","upc_e","code_128"] });
   const v = $("#cam-video");
   let busy = false, found = false;
@@ -1835,6 +1840,49 @@ async function startBarcodeLoop(){
     scanRAF = requestAnimationFrame(tick);
   }
   tick();
+}
+
+function loadZXing(){
+  if(window.ZXing) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js";
+    s.onload = res;
+    s.onerror = () => rej(new Error("Couldn't load barcode library — check connection"));
+    document.head.appendChild(s);
+  });
+}
+
+async function startBarcodeZXing(){
+  try{
+    await loadZXing();
+  }catch(e){
+    toast(e.message, "error");
+    closeCamera();
+    return;
+  }
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.EAN_13,
+    ZXing.BarcodeFormat.EAN_8,
+    ZXing.BarcodeFormat.UPC_A,
+    ZXing.BarcodeFormat.UPC_E,
+    ZXing.BarcodeFormat.CODE_128
+  ]);
+  zxingReader = new ZXing.BrowserMultiFormatReader(hints, 250);
+  const v = $("#cam-video");
+  try{
+    zxingReader.decodeFromVideoElementContinuously(v, (result, err) => {
+      if(result){
+        const code = result.getText();
+        closeCamera();
+        handleBarcode(code);
+      }
+    });
+  }catch(e){
+    toast("Scanner error: "+e.message, "error");
+    closeCamera();
+  }
 }
 
 async function handleBarcode(code){

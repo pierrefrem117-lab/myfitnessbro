@@ -1,5 +1,5 @@
 // Bump this when index.html or other cached files change.
-var CACHE_VERSION = "myfitnessbro-v8";
+var CACHE_VERSION = "myfitnessbro-v9";
 
 var CORE_FILES = [
   "./",
